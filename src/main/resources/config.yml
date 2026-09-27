@@ -1,0 +1,118 @@
+provider: manual # tebex | craftingstore | paynow | manual
+store-url: "https://store.yourserver.com"
+ignore-before: "2000-01-01" # yyyy-MM-dd - payments older than this are never processed
+poll-interval-seconds: 30
+min-amount-for-broadcast: 0
+
+tebex:
+  secret: paste-here
+
+craftingstore:
+  secret: paste-here
+
+paynow:
+  api-key: paste-here
+  store-id: paste-here
+
+storage:
+  type: sqlite # sqlite | mysql | mariadb
+  host: localhost
+  port: 3306
+  database: storetrack
+  username: storetrack
+  password: ""
+  pool-size: 5
+
+on-purchase:
+  commands: [] # "{player} {amount} {package}" placeholders
+  chat: "&a%player% &7just purchased &f%package%&7!"
+  title: "<gradient:#f5d742:#42f557:#428df5>Thank You!"
+  subtitle: "%player%"
+  sound: "ENTITY_PLAYER_LEVELUP:1:1"
+
+recent:
+  size: 10
+
+goal:
+  mode: internal # internal | external
+  bar:
+    full: "&a|"
+    empty: "&7|"
+    length: 40
+  milestones:
+    - percent: 25
+      message: "&e25%% of the way to the community goal!"
+      commands: []
+    - percent: 50
+      message: "&e50%% of the way to the community goal!"
+      commands: []
+    - percent: 100
+      message: "&a&lGoal reached!"
+      commands: []
+  completion-commands: []
+
+fireworks:
+  enabled: true
+  mode: player # player | all
+  power: 1
+  effects:
+    BALL_LARGE:
+      colors: ["#34eb7d", "#ec40ff", "#4046ff"]
+      flicker: true
+      trail: true
+
+ggwave:
+  enabled: false
+  duration-seconds: 10
+  trigger-text: "gg"
+  message-text: "GG - %player%"
+  message-format: "<gradient:#FF5073:#FFB46C:#E8EF69:#93F66F:#79F8A1:#77ECF0:#A6C6FD:#FF87F7>%message%</gradient>"
+  start-message: "&b🌊 GG Wave activated - type GG in chat to be rewarded."
+  end-message: "&b🌊 GG Wave is over."
+  reward-commands:
+    - "eco give {player} 100"
+
+sale:
+  name: ""
+  amount: ""
+  activated-message: "&d%sale% Sale activated - %type%: %amount%"
+
+donor-tiers:
+  - threshold: 50
+    commands:
+      - "lp user {player} parent add donor"
+  - threshold: 200
+    commands:
+      - "lp user {player} parent add vip_donor"
+
+on-chargeback:
+  commands: []
+
+npc-skins: {} # npcName: alltime_1 | monthly_1 | recent_1
+fallback-skin: "MHF_Question"
+
+webhooks:
+  purchase:
+    enabled: false
+    webhook-url: ""
+    mode: components # components | embed
+    template: "webhooks/purchase.json"
+    accent-color: "#42f584"
+  goal-reached:
+    enabled: false
+    webhook-url: ""
+    mode: components
+    template: "webhooks/goal-reached.json"
+    accent-color: "#f5c542"
+  milestone:
+    enabled: false
+    webhook-url: ""
+    mode: components
+    template: "webhooks/milestone.json"
+    accent-color: "#42a5f5"
+  sale-activated:
+    enabled: false
+    webhook-url: ""
+    mode: components
+    template: "webhooks/sale-activated.json"
+    accent-color: "#ff4757"
