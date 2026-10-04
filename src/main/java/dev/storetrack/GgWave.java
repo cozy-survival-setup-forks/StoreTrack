@@ -16,10 +16,10 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Reads chat only, at LOWEST with ignoreCancelled = false, so it still sees the raw typed
- * message even if Quill (our chat plugin) reformats or cancels the vanilla broadcast. Never
- * touches event.message() or calls setCancelled - Quill keeps full control of what actually
- * gets shown.
+ * Listens at LOWEST with ignoreCancelled = false, so it sees the raw typed message before
+ * Quill (our chat plugin) formats or cancels it. Never touches event.message(). When
+ * ggwave.hide-chat-message is on, the trigger message of a player who is rewarded in this wave
+ * is cancelled so only the wave's own line is shown; every other message is left alone.
  */
 final class GgWave implements Listener {
 
@@ -61,12 +61,13 @@ final class GgWave implements Listener {
         if (!active)
             return;
         Player player = event.getPlayer();
-        if (rewarded.contains(player.getUniqueId()))
-            return;
         String plain = PlainTextComponentSerializer.plainText().serialize(event.message()).trim();
         if (!plain.equalsIgnoreCase(cfg.ggwaveTriggerText))
             return;
-        rewarded.add(player.getUniqueId());
+        if (!rewarded.add(player.getUniqueId()))
+            return;
+        if (cfg.ggwaveHideChatMessage)
+            event.setCancelled(true);
         Bukkit.getScheduler().runTask(plugin, () -> {
             Bukkit.getServer().sendMessage(MM.deserialize(cfg.ggwaveMessageFormat
                 .replace("%message%", cfg.ggwaveMessageText.replace("%player%", player.getName()))));

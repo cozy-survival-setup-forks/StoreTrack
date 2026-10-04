@@ -43,7 +43,7 @@ final class Config {
     int fireworksPower;
     Map<FireworkEffect.Type, FireworkEffectDef> fireworkEffects;
 
-    boolean ggwaveEnabled;
+    boolean ggwaveEnabled, ggwaveHideChatMessage;
     int ggwaveDurationSeconds;
     String ggwaveTriggerText, ggwaveMessageText, ggwaveMessageFormat, ggwaveStartMessage, ggwaveEndMessage;
     List<String> ggwaveRewardCommands;
@@ -228,6 +228,7 @@ final class Config {
         }
 
         cfg.ggwaveEnabled = c.getBoolean("ggwave.enabled", false);
+        cfg.ggwaveHideChatMessage = c.getBoolean("ggwave.hide-chat-message", true);
         cfg.ggwaveDurationSeconds = c.getInt("ggwave.duration-seconds", 10);
         cfg.ggwaveTriggerText = c.getString("ggwave.trigger-text", "gg").toLowerCase(Locale.ROOT);
         cfg.ggwaveMessageText = c.getString("ggwave.message-text", "GG - %player%");

@@ -66,6 +66,9 @@ ggwave:
   duration-seconds: 10
   trigger-text: "gg"
   message-text: "GG - %player%"
+  # Cancel the typed trigger message of a rewarded player so only the wave line above is shown.
+  # A repeated trigger from the same player in the same wave is shown as normal chat.
+  hide-chat-message: true
   message-format: "<gradient:#FF5073:#FFB46C:#E8EF69:#93F66F:#79F8A1:#77ECF0:#A6C6FD:#FF87F7>%message%</gradient>"
   start-message: "&b🌊 GG Wave activated - type GG in chat to be rewarded."
   end-message: "&b🌊 GG Wave is over."
