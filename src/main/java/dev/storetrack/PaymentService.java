@@ -64,8 +64,17 @@ final class PaymentService {
         }
     }
 
+    /** When the last poll finished and how many payments it found, for /storetrack status. */
+    volatile long lastPollAt;
+    volatile int lastPollNew;
+
+    String providerName() {
+        return provider.getClass().getSimpleName().replace("Provider", "");
+    }
+
     private void poll() {
         List<Payment> polled = provider.poll();
+        lastPollAt = System.currentTimeMillis();
         for (PaymentProvider.Reversal reversal : provider.drainReversals())
             reverse(reversal.id, reversal.status, "reported by " + cfg.provider.name().toLowerCase(Locale.ROOT));
 
@@ -75,6 +84,7 @@ final class PaymentService {
             if (p.id != null && !unique.containsKey(p.id) && !db.isProcessed(p.id))
                 unique.put(p.id, p);
         List<Payment> fresh = new ArrayList<>(unique.values());
+        lastPollNew = fresh.size();
         if (fresh.isEmpty())
             return;
 

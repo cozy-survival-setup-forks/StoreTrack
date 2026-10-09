@@ -16,7 +16,7 @@ import java.util.stream.Collectors;
 
 final class StoreTrackCommand implements CommandExecutor, TabCompleter {
 
-    private static final List<String> SUBS = List.of("reload", "manual", "payment", "history", "recent", "goal", "test", "ggwave", "npcrefresh");
+    private static final List<String> SUBS = List.of("reload", "manual", "payment", "history", "recent", "goal", "test", "ggwave", "npcrefresh", "status");
 
     private final StoreTrackPlugin plugin;
     private final PaymentService payments;
@@ -53,6 +53,7 @@ final class StoreTrackCommand implements CommandExecutor, TabCompleter {
             case "reload" -> {
                 sender.sendMessage(msg(plugin.reloadStoreTrackConfig() ? "reloaded" : "reload-failed"));
             }
+            case "status" -> status(sender);
             case "manual" -> manual(sender, args);
             case "payment" -> payment(sender, args);
             case "history" -> history(sender, args);
@@ -68,6 +69,17 @@ final class StoreTrackCommand implements CommandExecutor, TabCompleter {
             default -> sender.sendMessage(msg("usage"));
         }
         return true;
+    }
+
+    private void status(CommandSender sender) {
+        Config cfg = plugin.config();
+        String last = payments.lastPollAt == 0 ? "not yet"
+            : ((System.currentTimeMillis() - payments.lastPollAt) / 1000) + "s ago, " + payments.lastPollNew + " new";
+        sender.sendMessage(msg("status-line").replace("%key%", "Provider").replace("%value%", payments.providerName()));
+        sender.sendMessage(msg("status-line").replace("%key%", "Last check").replace("%value%", last));
+        sender.sendMessage(msg("status-line").replace("%key%", "Storage").replace("%value%", cfg.storageType.name().toLowerCase()));
+        sender.sendMessage(msg("status-line").replace("%key%", "Goal").replace("%value%", (long) goals.current() + " / " + (long) goals.target()));
+        sender.sendMessage(msg("status-line").replace("%key%", "GG wave").replace("%value%", ggwave.isActive() ? "active" : "off"));
     }
 
     private void manual(CommandSender sender, String[] args) {
