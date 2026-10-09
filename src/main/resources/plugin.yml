@@ -2,7 +2,8 @@ name: StoreTrack
 version: '${version}'
 main: dev.storetrack.StoreTrackPlugin
 api-version: '1.21'
-authors: [Groovyy Roy]
+authors: [Groovified]
+website: https://discord.gg/blockie
 description: Store purchase tracking - rankings, community goals, fireworks, gg waves, Discord webhooks
 softdepend: [PlaceholderAPI, Vault, FancyNpcs, floodgate]
 
@@ -10,7 +11,7 @@ commands:
   storetrack:
     description: Manage payments, goals, ggwaves and NPC skin refresh
     aliases: [strack]
-    usage: /<command> reload|manual|payment|history|recent|goal|test|ggwave|npcrefresh
+    usage: /<command> reload|status|manual|payment|history|recent|goal|test|ggwave|npcrefresh
 
 permissions:
   storetrack.admin:
