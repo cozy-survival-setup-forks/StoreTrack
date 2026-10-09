@@ -33,6 +33,7 @@ final class Webhooks {
             return;
         Map<String, String> full = new java.util.HashMap<>(placeholders);
         full.putIfAbsent("store_url", cfg.storeUrl);
+        full.computeIfPresent("goal_bar", (k, v) -> v.replaceAll("&[0-9a-fk-orA-FK-OR]", "")); // Discord has no colour codes
         CompletableFuture.runAsync(() -> attempt(eventKey, def, full, 0));
     }
 

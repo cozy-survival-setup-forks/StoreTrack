@@ -64,7 +64,7 @@ final class StoreTrackExpansion extends PlaceholderExpansion {
             case "goal_current" -> String.valueOf((long) goals.current());
             case "goal_target" -> String.valueOf((long) goals.target());
             case "goal_percent" -> String.valueOf((int) goals.percent());
-            case "goal_bar" -> goals.bar();
+            case "goal_bar" -> Text.legacy(goals.bar());
             case "sale_name" -> cfg.saleName;
             case "sale_amount" -> cfg.saleAmount;
             default -> null;
