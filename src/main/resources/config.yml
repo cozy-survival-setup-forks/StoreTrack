@@ -119,3 +119,7 @@ webhooks:
     mode: components
     template: "webhooks/sale-activated.json"
     accent-color: "#ff4757"
+
+metrics:
+  enabled: true
+  interval-minutes: 45
