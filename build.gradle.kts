@@ -21,7 +21,11 @@ dependencies {
     // dependency (class file major version 69 / Java 25), so there's no jar to compile against.
 
     implementation("com.zaxxer:HikariCP:6.2.1")
-    implementation("org.xerial:sqlite-jdbc:3.47.1.0")
+    // Paper ships the SQLite driver itself, so it is not bundled (that alone was 12 MB of the jar)
+    compileOnly("org.xerial:sqlite-jdbc:3.47.1.0")
+    testImplementation("org.xerial:sqlite-jdbc:3.47.1.0")
+    testImplementation("com.zaxxer:HikariCP:6.2.1")
+    testImplementation("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
     implementation("org.mariadb.jdbc:mariadb-java-client:3.5.1")
 
     testImplementation(platform("org.junit:junit-bom:6.1.3"))
@@ -52,6 +56,9 @@ tasks {
 
     shadowJar {
         archiveFileName = "StoreTrack-${project.version}.jar"
+        manifest {
+            attributes("Implementation-Vendor" to "Groovified / Blockie Studios")
+        }
         // No relocate() here: this Shadow release's ASM remapper throws on plain LDC/invokedynamic
         // Type constants pointing at our OWN classes (Config$Provider, any record, etc.) the moment
         // any relocation is configured - a real Shadow/ASM compatibility bug, not something fixable
