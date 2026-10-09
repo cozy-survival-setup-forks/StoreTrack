@@ -10,6 +10,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.logging.Logger;
 
 final class Config {
 
@@ -172,9 +173,9 @@ final class Config {
         }
     }
 
-    static Config load(FileConfiguration c) {
+    static Config load(FileConfiguration c, Logger log) {
         Config cfg = new Config();
-        cfg.provider = enumOr(c.getString("provider"), Provider.MANUAL);
+        cfg.provider = enumOr("provider", c.getString("provider"), Provider.MANUAL, log);
         cfg.storeUrl = c.getString("store-url", "");
         cfg.ignoreBefore = parseDate(c.getString("ignore-before"));
         cfg.pollIntervalSeconds = Math.max(5, c.getInt("poll-interval-seconds", 30));
@@ -185,7 +186,7 @@ final class Config {
         cfg.paynowApiKey = c.getString("paynow.api-key", "");
         cfg.paynowStoreId = c.getString("paynow.store-id", "");
 
-        cfg.storageType = enumOr(c.getString("storage.type"), StorageType.SQLITE);
+        cfg.storageType = enumOr("storage.type", c.getString("storage.type"), StorageType.SQLITE, log);
         cfg.dbHost = c.getString("storage.host", "localhost");
         cfg.dbPort = c.getInt("storage.port", 3306);
         cfg.dbDatabase = c.getString("storage.database", "storetrack");
@@ -202,14 +203,17 @@ final class Config {
         cfg.goalModeExternal = c.getString("goal.mode", "internal");
         cfg.goalBarFull = c.getString("goal.bar.full", "&a|");
         cfg.goalBarEmpty = c.getString("goal.bar.empty", "&7|");
-        cfg.goalBarLength = c.getInt("goal.bar.length", 40);
+        cfg.goalBarLength = Math.max(1, Math.min(200, c.getInt("goal.bar.length", 40)));
         cfg.milestones = new ArrayList<>();
-        List<Map<?, ?>> milestoneMaps = c.getMapList("goal.milestones");
-        for (int i = 0; i < milestoneMaps.size(); i++) {
-            ConfigurationSection s = c.getConfigurationSection("goal.milestones." + i);
-            if (s != null)
-                cfg.milestones.add(new Milestone(s.getInt("percent"), s.getString("message", ""), s.getStringList("commands")));
+        for (Map<?, ?> m : c.getMapList("goal.milestones")) {
+            int percent = (int) number(m.get("percent"), 0);
+            if (percent < 1 || percent > 100) {
+                log.warning("A goal.milestones entry has percent " + m.get("percent") + " and was skipped (use 1 to 100).");
+                continue;
+            }
+            cfg.milestones.add(new Milestone(percent, text(m.get("message")).replace("%%", "%"), strings(m.get("commands"))));
         }
+        cfg.milestones.sort(java.util.Comparator.comparingInt(Milestone::percent));
         cfg.goalCompletionCommands = c.getStringList("goal.completion-commands");
 
         cfg.fireworksEnabled = c.getBoolean("fireworks.enabled", true);
@@ -222,14 +226,14 @@ final class Config {
                 ConfigurationSection e = effects.getConfigurationSection(key);
                 if (e == null)
                     continue;
-                FireworkEffect.Type type = enumOr(key, FireworkEffect.Type.BALL);
+                FireworkEffect.Type type = enumOr("fireworks.effects." + key, key, FireworkEffect.Type.BALL, log);
                 cfg.fireworkEffects.put(type, new FireworkEffectDef(type, e.getStringList("colors"), e.getBoolean("flicker", true), e.getBoolean("trail", true)));
             }
         }
 
         cfg.ggwaveEnabled = c.getBoolean("ggwave.enabled", false);
         cfg.ggwaveHideChatMessage = c.getBoolean("ggwave.hide-chat-message", true);
-        cfg.ggwaveDurationSeconds = c.getInt("ggwave.duration-seconds", 10);
+        cfg.ggwaveDurationSeconds = Math.max(1, c.getInt("ggwave.duration-seconds", 10));
         cfg.ggwaveTriggerText = c.getString("ggwave.trigger-text", "gg").toLowerCase(Locale.ROOT);
         cfg.ggwaveMessageText = c.getString("ggwave.message-text", "GG - %player%");
         cfg.ggwaveMessageFormat = c.getString("ggwave.message-format", "%message%");
@@ -242,12 +246,15 @@ final class Config {
         cfg.saleActivatedMessage = c.getString("sale.activated-message", "");
 
         cfg.donorTiers = new ArrayList<>();
-        List<Map<?, ?>> tierMaps = c.getMapList("donor-tiers");
-        for (int i = 0; i < tierMaps.size(); i++) {
-            ConfigurationSection s = c.getConfigurationSection("donor-tiers." + i);
-            if (s != null)
-                cfg.donorTiers.add(new DonorTier(s.getDouble("threshold"), s.getStringList("commands")));
+        for (Map<?, ?> m : c.getMapList("donor-tiers")) {
+            double threshold = number(m.get("threshold"), 0);
+            if (threshold <= 0) {
+                log.warning("A donor-tiers entry has threshold " + m.get("threshold") + " and was skipped (use an amount above 0).");
+                continue;
+            }
+            cfg.donorTiers.add(new DonorTier(threshold, strings(m.get("commands"))));
         }
+        cfg.donorTiers.sort(java.util.Comparator.comparingDouble(DonorTier::threshold));
         cfg.onChargebackCommands = c.getStringList("on-chargeback.commands");
 
         cfg.npcSkins = new HashMap<>();
@@ -264,14 +271,18 @@ final class Config {
                 ConfigurationSection w = webhooksSection.getConfigurationSection(key);
                 if (w == null)
                     continue;
+                boolean enabled = w.getBoolean("enabled", false);
+                String url = w.getString("webhook-url", "").trim();
+                if (enabled && !url.startsWith("https://"))
+                    log.warning("Webhook '" + key + "' is on but webhook-url is not an https address, so nothing will be sent.");
                 cfg.webhooks.put(key, new WebhookDef(
-                    w.getBoolean("enabled", false), w.getString("webhook-url", ""),
+                    enabled, url,
                     "embed".equalsIgnoreCase(w.getString("mode")) ? WebhookMode.EMBED : WebhookMode.COMPONENTS,
-                    w.getString("template", ""), w.getString("accent-color", "#5865F2")));
+                    w.getString("template", ""), colorNumber(w.getString("accent-color", ""))));
             }
         }
 
-        cfg.recentSize = Math.max(1, c.getInt("recent.size", 10));
+        cfg.recentSize = Math.max(1, Math.min(100, c.getInt("recent.size", 10)));
         return cfg;
     }
 
@@ -283,12 +294,53 @@ final class Config {
         }
     }
 
-    private static <E extends Enum<E>> E enumOr(String name, E fallback) {
-        if (name == null)
+    private static <E extends Enum<E>> E enumOr(String path, String name, E fallback, Logger log) {
+        if (name == null || name.isBlank())
             return fallback;
         try {
-            return Enum.valueOf(fallback.getDeclaringClass(), name.toUpperCase(Locale.ROOT));
+            return Enum.valueOf(fallback.getDeclaringClass(), name.trim().toUpperCase(Locale.ROOT));
         } catch (IllegalArgumentException e) {
+            log.warning(path + " is '" + name + "', which is not one of " + java.util.Arrays.toString(fallback.getDeclaringClass().getEnumConstants())
+                + ". Using " + fallback + ".");
+            return fallback;
+        }
+    }
+
+    private static double number(Object value, double fallback) {
+        if (value instanceof Number n && Double.isFinite(n.doubleValue()))
+            return n.doubleValue();
+        if (value instanceof String text)
+            try {
+                double parsed = Double.parseDouble(text.trim());
+                return Double.isFinite(parsed) ? parsed : fallback;
+            } catch (NumberFormatException ignored) {
+                // falls through
+            }
+        return fallback;
+    }
+
+    private static String text(Object value) {
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private static List<String> strings(Object value) {
+        List<String> out = new ArrayList<>();
+        if (value instanceof List<?> list)
+            for (Object o : list)
+                if (o != null)
+                    out.add(String.valueOf(o));
+        return out;
+    }
+
+    /** Discord wants the colour as a whole number: #RRGGBB (or a plain number) becomes that number, as text. */
+    static String colorNumber(String value) {
+        String fallback = String.valueOf(0x5865F2);
+        if (value == null || value.isBlank())
+            return fallback;
+        String v = value.trim();
+        try {
+            return String.valueOf(v.startsWith("#") ? Integer.parseInt(v.substring(1), 16) & 0xFFFFFF : Integer.parseInt(v) & 0xFFFFFF);
+        } catch (NumberFormatException e) {
             return fallback;
         }
     }

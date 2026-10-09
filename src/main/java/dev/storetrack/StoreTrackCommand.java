@@ -1,7 +1,6 @@
 package dev.storetrack;
 
 import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -36,11 +35,8 @@ final class StoreTrackCommand implements CommandExecutor, TabCompleter {
     }
 
     private String msg(String key) {
-        return color(plugin.messages().getString(key, key));
-    }
-
-    private static String color(String s) {
-        return ChatColor.translateAlternateColorCodes('&', s);
+        String text = plugin.messages().getString(key);
+        return Text.legacy(text == null ? key : text);
     }
 
     @Override
@@ -55,8 +51,7 @@ final class StoreTrackCommand implements CommandExecutor, TabCompleter {
         }
         switch (args[0].toLowerCase(Locale.ROOT)) {
             case "reload" -> {
-                plugin.reloadStoreTrackConfig();
-                sender.sendMessage(msg("reloaded"));
+                sender.sendMessage(msg(plugin.reloadStoreTrackConfig() ? "reloaded" : "reload-failed"));
             }
             case "manual" -> manual(sender, args);
             case "payment" -> payment(sender, args);
@@ -80,17 +75,24 @@ final class StoreTrackCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(msg("usage"));
             return;
         }
-        OfflinePlayer target = Bukkit.getOfflinePlayer(args[1]);
-        double amount;
-        try {
-            amount = Double.parseDouble(args[2]);
-        } catch (NumberFormatException e) {
+        String typed = args[1];
+        double amount = parseDoubleOr(args[2], -1);
+        if (!Payment.validName(typed) || amount <= 0 || amount > 1_000_000_000) {
             sender.sendMessage(msg("usage"));
             return;
         }
         String pkg = args.length > 3 ? String.join(" ", java.util.Arrays.copyOfRange(args, 3, args.length)) : "Manual";
-        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> payments.manual(target.getUniqueId(), target.getName(), amount, pkg));
-        sender.sendMessage(msg("manual-created").replace("%player%", String.valueOf(target.getName())));
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
+            OfflinePlayer cached = Bukkit.getOfflinePlayerIfCached(typed);
+            UUID uuid = cached != null ? cached.getUniqueId() : Mojang.resolve(typed);
+            if (uuid == null) {
+                sender.sendMessage(msg("player-not-found"));
+                return;
+            }
+            String name = cached != null && cached.getName() != null ? cached.getName() : typed;
+            payments.manual(uuid, name, amount, pkg);
+            sender.sendMessage(msg("manual-created").replace("%player%", name));
+        });
     }
 
     private void payment(CommandSender sender, String[] args) {
@@ -107,7 +109,7 @@ final class StoreTrackCommand implements CommandExecutor, TabCompleter {
                     return;
                 }
                 sender.sendMessage(msg("payment-info-header").replace("%id%", id));
-                sender.sendMessage(msg("payment-info-line").replace("%key%", "Player").replace("%value%", String.valueOf(p.name)));
+                sender.sendMessage(msg("payment-info-line").replace("%key%", "Player").replace("%value%", p.name == null ? "unknown" : p.name));
                 sender.sendMessage(msg("payment-info-line").replace("%key%", "Amount").replace("%value%", p.currency + p.amount));
                 sender.sendMessage(msg("payment-info-line").replace("%key%", "Status").replace("%value%", p.status));
                 sender.sendMessage(msg("payment-info-line").replace("%key%", "Packages").replace("%value%", String.valueOf(p.packages)));
@@ -130,24 +132,33 @@ final class StoreTrackCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(msg("usage"));
             return;
         }
-        OfflinePlayer target = Bukkit.getOfflinePlayer(args[1]);
+        String typed = args[1];
         Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
-            List<Payment> list = payments.history(target.getUniqueId());
-            sender.sendMessage(msg("history-header").replace("%player%", String.valueOf(target.getName())));
+            OfflinePlayer cached = Payment.validName(typed) ? Bukkit.getOfflinePlayerIfCached(typed) : null;
+            UUID uuid = cached != null ? cached.getUniqueId() : Mojang.resolve(typed);
+            if (uuid == null) {
+                sender.sendMessage(msg("player-not-found"));
+                return;
+            }
+            List<Payment> list = payments.history(uuid);
+            sender.sendMessage(msg("history-header").replace("%player%", typed));
             for (Payment p : list)
-                sender.sendMessage(msg("recent-line").replace("%index%", "-").replace("%name%", p.name)
-                    .replace("%package%", p.packages).replace("%amount%", p.currency + p.amount));
+                sender.sendMessage(line("-", p));
         });
     }
 
+    private String line(String index, Payment p) {
+        return msg("recent-line").replace("%index%", index).replace("%name%", p.shownName())
+            .replace("%package%", p.shownPackages()).replace("%amount%", p.currency + p.amount);
+    }
+
     private void recent(CommandSender sender, String[] args) {
-        int n = args.length > 1 ? parseIntOr(args[1], 10) : 10;
+        int n = Math.max(1, Math.min(100, args.length > 1 ? parseIntOr(args[1], 10) : 10));
         List<Payment> list = payments.recent();
         sender.sendMessage(msg("recent-header"));
         for (int i = 0; i < Math.min(n, list.size()); i++) {
             Payment p = list.get(i);
-            sender.sendMessage(msg("recent-line").replace("%index%", String.valueOf(i + 1)).replace("%name%", p.name)
-                .replace("%package%", p.packages).replace("%amount%", p.currency + p.amount));
+            sender.sendMessage(line(String.valueOf(i + 1), p));
         }
     }
 
@@ -163,8 +174,12 @@ final class StoreTrackCommand implements CommandExecutor, TabCompleter {
                     return;
                 }
                 double target = parseDoubleOr(args[args.length - 1], 0);
+                if (target <= 0) {
+                    sender.sendMessage(msg("usage"));
+                    return;
+                }
                 String name = String.join(" ", java.util.Arrays.copyOfRange(args, 2, args.length - 1));
-                goals.set(0, target, name, plugin.getLogger());
+                goals.restart(target, name);
                 sender.sendMessage(msg("goal-created").replace("%name%", name).replace("%target%", String.valueOf(target)));
             }
             case "set" -> {
@@ -178,9 +193,9 @@ final class StoreTrackCommand implements CommandExecutor, TabCompleter {
                     return;
                 }
                 if ("current".equalsIgnoreCase(args[2]))
-                    goals.set(value, goals.target(), null, plugin.getLogger());
+                    goals.set(value, goals.target(), null);
                 else if ("target".equalsIgnoreCase(args[2]))
-                    goals.set(goals.current(), value, null, plugin.getLogger());
+                    goals.set(goals.current(), value, null);
                 else {
                     sender.sendMessage(msg("usage"));
                     return;
@@ -188,7 +203,7 @@ final class StoreTrackCommand implements CommandExecutor, TabCompleter {
                 sender.sendMessage(msg("goal-updated"));
             }
             case "delete" -> {
-                goals.set(0, 0, null, plugin.getLogger());
+                goals.restart(0, null);
                 sender.sendMessage(msg("goal-updated"));
             }
             default -> sender.sendMessage(msg("usage"));
@@ -208,8 +223,8 @@ final class StoreTrackCommand implements CommandExecutor, TabCompleter {
             case "goal" -> webhooks.send("goal-reached", Map.of("goal_name", "Test Goal", "goal_reward", "test reward"));
             case "milestone" -> webhooks.send("milestone", Map.of("goal_percent", "50", "goal_bar", goals.bar(), "goal_reward", "test reward"));
             case "sale" -> {
-                Bukkit.broadcastMessage(color(plugin.config().saleActivatedMessage
-                    .replace("%sale%", plugin.config().saleName).replace("%type%", "Discount").replace("%amount%", plugin.config().saleAmount)));
+                Text.broadcast(plugin.config().saleActivatedMessage
+                    .replace("%sale%", plugin.config().saleName).replace("%type%", "Discount").replace("%amount%", plugin.config().saleAmount));
                 webhooks.send("sale-activated", Map.of("sale_name", plugin.config().saleName, "sale_amount", plugin.config().saleAmount));
             }
             default -> sender.sendMessage(msg("usage"));
@@ -251,7 +266,8 @@ final class StoreTrackCommand implements CommandExecutor, TabCompleter {
 
     private static double parseDoubleOr(String s, double fallback) {
         try {
-            return Double.parseDouble(s);
+            double value = Double.parseDouble(s);
+            return Double.isFinite(value) ? value : fallback;
         } catch (NumberFormatException e) {
             return fallback;
         }

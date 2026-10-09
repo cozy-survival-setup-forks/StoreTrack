@@ -41,10 +41,10 @@ goal:
     length: 40
   milestones:
     - percent: 25
-      message: "&e25%% of the way to the community goal!"
+      message: "&e25% of the way to the community goal!"
       commands: []
     - percent: 50
-      message: "&e50%% of the way to the community goal!"
+      message: "&e50% of the way to the community goal!"
       commands: []
     - percent: 100
       message: "&a&lGoal reached!"

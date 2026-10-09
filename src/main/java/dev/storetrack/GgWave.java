@@ -4,7 +4,6 @@ import io.papermc.paper.event.player.AsyncChatEvent;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
@@ -43,8 +42,9 @@ final class GgWave implements Listener {
     void start() {
         active = true;
         rewarded.clear();
-        Bukkit.broadcastMessage(ChatColor.translateAlternateColorCodes('&', cfg.ggwaveStartMessage));
-        timeout = Bukkit.getScheduler().runTaskLater(plugin, this::stop, cfg.ggwaveDurationSeconds * 20L);
+        if (!cfg.ggwaveStartMessage.isBlank())
+            Text.broadcast(cfg.ggwaveStartMessage);
+        timeout = Bukkit.getScheduler().runTaskLater(plugin, this::stop, Math.max(1, cfg.ggwaveDurationSeconds) * 20L);
     }
 
     void stop() {
@@ -53,7 +53,8 @@ final class GgWave implements Listener {
         active = false;
         if (timeout != null)
             timeout.cancel();
-        Bukkit.broadcastMessage(ChatColor.translateAlternateColorCodes('&', cfg.ggwaveEndMessage));
+        if (!cfg.ggwaveEndMessage.isBlank())
+            Text.broadcast(cfg.ggwaveEndMessage);
     }
 
     @EventHandler(priority = EventPriority.LOWEST, ignoreCancelled = false)
@@ -69,6 +70,8 @@ final class GgWave implements Listener {
         if (cfg.ggwaveHideChatMessage)
             event.setCancelled(true);
         Bukkit.getScheduler().runTask(plugin, () -> {
+            if (!active)
+                return; // the wave ended between the message and this tick
             Bukkit.getServer().sendMessage(MM.deserialize(cfg.ggwaveMessageFormat
                 .replace("%message%", cfg.ggwaveMessageText.replace("%player%", player.getName()))));
             for (String command : cfg.ggwaveRewardCommands)

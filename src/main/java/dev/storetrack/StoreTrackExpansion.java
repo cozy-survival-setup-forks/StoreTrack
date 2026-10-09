@@ -29,7 +29,7 @@ final class StoreTrackExpansion extends PlaceholderExpansion {
 
     @Override
     public @NotNull String getAuthor() {
-        return "Groovyy Roy";
+        return "Groovified";
     }
 
     @Override
@@ -97,7 +97,7 @@ final class StoreTrackExpansion extends PlaceholderExpansion {
         if (index < 0 || index >= list.size())
             return "name".equals(field) ? "" : "0";
         Rankings.Entry entry = list.get(index);
-        return "name".equals(field) ? entry.name() : String.valueOf((long) entry.amount());
+        return "name".equals(field) ? (entry.name() == null ? "" : entry.name()) : String.valueOf((long) entry.amount());
     }
 
     private String recentEntry(String suffix) {
@@ -116,8 +116,8 @@ final class StoreTrackExpansion extends PlaceholderExpansion {
             return field.equals("name") || field.equals("package") || field.equals("date") ? "" : "0";
         Payment p = list.get(index);
         return switch (field.toLowerCase(Locale.ROOT)) {
-            case "name" -> p.name;
-            case "package" -> p.packages;
+            case "name" -> p.name == null ? "" : p.name;
+            case "package" -> p.packages == null ? "" : p.packages;
             case "amount" -> String.valueOf((long) p.amount);
             case "date" -> java.time.Instant.ofEpochMilli(p.date).toString();
             default -> null;

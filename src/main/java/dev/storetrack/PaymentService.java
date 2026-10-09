@@ -1,17 +1,20 @@
 package dev.storetrack;
 
 import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
 import org.bukkit.entity.Player;
 
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Polling, batching and every side effect that follows a batch of new payments. Everything here
- * except the final `announce` hop runs off the main thread - PaymentService is only ever driven
- * by an async repeating task (see StoreTrackPlugin).
+ * except the final hop to the main thread runs off the main thread - PaymentService is only ever
+ * driven by an async repeating task (see StoreTrackPlugin) and by admin commands.
  */
 final class PaymentService {
 
@@ -24,9 +27,13 @@ final class PaymentService {
     private final DonorTiers donorTiers;
     private final Webhooks webhooks;
     private final NpcSkins npcSkins;
+    private final long installedAt;
+    /** One poll at a time: two overlapping ones would both see a payment as new and reward it twice. */
+    private final AtomicBoolean polling = new AtomicBoolean();
 
     PaymentService(StoreTrackPlugin plugin, Config cfg, Database db, PaymentProvider provider,
-                    Rankings rankings, GoalService goals, DonorTiers donorTiers, Webhooks webhooks, NpcSkins npcSkins) {
+                    Rankings rankings, GoalService goals, DonorTiers donorTiers, Webhooks webhooks, NpcSkins npcSkins,
+                    long installedAt) {
         this.plugin = plugin;
         this.cfg = cfg;
         this.db = db;
@@ -36,38 +43,68 @@ final class PaymentService {
         this.donorTiers = donorTiers;
         this.webhooks = webhooks;
         this.npcSkins = npcSkins;
+        this.installedAt = installedAt;
     }
 
     /** Called once at startup so placeholders aren't empty before the first poll. */
     void primeCaches() {
-        rankings.refresh(10);
-        rankings.refreshRecent(cfg.recentSize);
+        refreshAllCaches();
     }
 
     /** Called on the polling task. */
     void pollOnce() {
-        List<Payment> fresh = provider.poll();
+        if (!polling.compareAndSet(false, true))
+            return; // the last poll is still running
+        try {
+            poll();
+        } catch (RuntimeException e) {
+            plugin.getLogger().warning("A poll failed and will be tried again: " + e);
+        } finally {
+            polling.set(false);
+        }
+    }
+
+    private void poll() {
+        List<Payment> polled = provider.poll();
+        for (PaymentProvider.Reversal reversal : provider.drainReversals())
+            reverse(reversal.id, reversal.status, "reported by " + cfg.provider.name().toLowerCase(Locale.ROOT));
+
+        // Each payment once: a provider can repeat an id, and an id we already hold is not new
+        Map<String, Payment> unique = new LinkedHashMap<>();
+        for (Payment p : polled)
+            if (p.id != null && !unique.containsKey(p.id) && !db.isProcessed(p.id))
+                unique.put(p.id, p);
+        List<Payment> fresh = new ArrayList<>(unique.values());
         if (fresh.isEmpty())
             return;
-        for (Payment p : fresh)
-            if (p.uuid == null && p.name != null)
+
+        for (Payment p : fresh) {
+            if (p.uuid == null && Payment.validName(p.name))
                 p.uuid = Mojang.resolve(p.name);
+            if (p.name == null && p.uuid != null)
+                p.name = Bukkit.getOfflinePlayer(p.uuid).getName();
+            p.silent = p.date < installedAt;
+        }
 
         db.insertBatch(fresh); // one transaction for the whole batch, not one write per payment
-        double totalNew = fresh.stream().filter(Payment::countsTowardTotals).mapToDouble(p -> p.amount).sum();
+        double totalNew = fresh.stream().filter(p -> p.countsTowardTotals() && !p.silent).mapToDouble(p -> p.amount).sum();
         if (totalNew > 0)
             goals.addProgress(totalNew); // recomputes milestones once for the batch, not per payment
-        rankings.refresh(10);
-        rankings.refreshRecent(cfg.recentSize);
-        rankings.refreshOnlineTotals(Bukkit.getOnlinePlayers());
+        refreshAllCaches();
         for (Payment p : fresh)
-            if (p.countsTowardTotals())
+            if (p.countsTowardTotals() && !p.silent)
                 donorTiers.check(p.uuid, p.name);
 
         Bukkit.getScheduler().runTask(plugin, () -> {
-            for (Payment p : fresh)
-                if (p.countsTowardTotals())
+            for (Payment p : fresh) {
+                if (!p.countsTowardTotals() || p.silent)
+                    continue;
+                try {
                     announce(p);
+                } catch (RuntimeException e) {
+                    plugin.getLogger().warning("Announcing payment " + p.id + " failed: " + e);
+                }
+            }
             if (npcSkins != null)
                 npcSkins.refreshAll();
         });
@@ -77,62 +114,122 @@ final class PaymentService {
         if (payment.amount < cfg.minAmountForBroadcast)
             return;
         Player player = payment.uuid != null ? Bukkit.getPlayer(payment.uuid) : null;
+        String who = payment.shownName();
+        String what = payment.shownPackages();
 
         if (!cfg.purchaseChat.isBlank())
-            Bukkit.broadcastMessage(color(cfg.purchaseChat.replace("%player%", payment.name).replace("%package%", payment.packages)));
-        for (String command : cfg.onPurchaseCommands)
-            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command.replace("{player}", payment.name)
-                .replace("{amount}", String.valueOf(payment.amount)).replace("{package}", payment.packages));
+            Text.broadcast(cfg.purchaseChat.replace("%player%", who).replace("%package%", what));
+
+        if (payment.hasValidName()) {
+            for (String command : cfg.onPurchaseCommands)
+                Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command.replace("{player}", payment.name)
+                    .replace("{amount}", String.valueOf(payment.amount)).replace("{package}", what));
+        } else if (!cfg.onPurchaseCommands.isEmpty()) {
+            plugin.getLogger().warning("Payment " + payment.id + " has no usable player name, so the on-purchase commands were not run for it.");
+        }
 
         if (player != null) {
             var mm = net.kyori.adventure.text.minimessage.MiniMessage.miniMessage();
-            player.showTitle(net.kyori.adventure.title.Title.title(
-                mm.deserialize(cfg.purchaseTitle), mm.deserialize(cfg.purchaseSubtitle.replace("%player%", payment.name))));
+            if (!cfg.purchaseTitle.isBlank() || !cfg.purchaseSubtitle.isBlank())
+                player.showTitle(net.kyori.adventure.title.Title.title(
+                    mm.deserialize(cfg.purchaseTitle), mm.deserialize(cfg.purchaseSubtitle.replace("%player%", who))));
             if (!cfg.purchaseSound.isBlank())
                 playSound(player, cfg.purchaseSound);
             Fireworks.launch(cfg, player);
         }
 
         webhooks.send("purchase", Map.of(
-            "player", payment.name, "package", payment.packages,
-            "skin_url", "https://minotar.net/helm/" + payment.name,
+            "player", who, "package", what,
+            "skin_url", "https://minotar.net/helm/" + (payment.hasValidName() ? payment.name : "MHF_Question"),
             "goal_bar", goals.bar(), "goal_percent", String.valueOf((int) goals.percent()),
             "goal_reward", cfg.goalCompletionCommands.isEmpty() ? "" : cfg.goalCompletionCommands.size() + " reward command(s)"));
     }
 
     private void playSound(Player player, String spec) {
         String[] parts = spec.split(":");
+        org.bukkit.Sound sound = sound(parts[0]);
+        if (sound == null)
+            return;
         try {
-            player.playSound(player.getLocation(), org.bukkit.Sound.valueOf(parts[0]),
+            player.playSound(player.getLocation(), sound,
                 parts.length > 1 ? Float.parseFloat(parts[1]) : 1f, parts.length > 2 ? Float.parseFloat(parts[2]) : 1f);
-        } catch (IllegalArgumentException ignored) {
+        } catch (NumberFormatException ignored) {
+            // a volume or pitch that is not a number: no sound
         }
     }
 
-    private static String color(String s) {
-        return ChatColor.translateAlternateColorCodes('&', s);
+    /** ENTITY_PLAYER_LEVELUP style names, as written in config.yml. */
+    static org.bukkit.Sound sound(String name) {
+        String wanted = name.trim().replace('.', '_').toUpperCase(Locale.ROOT);
+        for (org.bukkit.Sound sound : org.bukkit.Registry.SOUNDS)
+            if (org.bukkit.Registry.SOUNDS.getKey(sound).getKey().replace('.', '_').toUpperCase(Locale.ROOT).equals(wanted))
+                return sound;
+        return null;
     }
 
     // ---- admin mutations, all funnelled through here so rankings always stay in sync ----
 
     void manual(UUID uuid, String name, double amount, String pkg) {
-        db.insertBatch(List.of(new Payment("manual-" + java.util.UUID.randomUUID(), uuid, name, amount, "USD",
-            pkg == null ? "Manual" : pkg, System.currentTimeMillis(), "completed")));
+        Payment payment = new Payment("manual-" + UUID.randomUUID(), uuid, name, amount, "USD",
+            Payment.clean(pkg, 80, "Manual"), System.currentTimeMillis(), "completed");
+        db.insertBatch(List.of(payment));
         goals.addProgress(amount);
         refreshAllCaches();
         donorTiers.check(uuid, name);
     }
 
+    /** An admin takes a payment out of the totals. Chargeback commands run when the reason says refund or chargeback. */
     void remove(String id, String reason) {
-        db.updateStatus(id, "removed", reason);
+        String lower = reason == null ? "" : reason.toLowerCase(Locale.ROOT);
+        reverse(id, "removed", reason, lower.contains("chargeback") || lower.contains("refund"));
+    }
+
+    /** The provider says a payment was refunded or charged back. */
+    private void reverse(String id, String status, String reason) {
+        reverse(id, status, reason, true);
+    }
+
+    private void reverse(String id, String status, String reason, boolean runCommands) {
+        Payment payment = db.get(id);
+        if (payment == null || !payment.countsTowardTotals()) {
+            if (payment == null)
+                return;
+            db.updateStatus(id, status, reason); // already out of the totals, only the label changes
+            return;
+        }
+        db.updateStatus(id, status, reason);
+        if (payment.date >= installedAt)
+            goals.subtractProgress(payment.amount);
         refreshAllCaches();
-        if (reason != null && (reason.toLowerCase().contains("chargeback") || reason.toLowerCase().contains("refund")))
-            for (String command : cfg.onChargebackCommands)
-                Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command.replace("{id}", id));
+        if (runCommands)
+            runChargebackCommands(payment);
+    }
+
+    private void runChargebackCommands(Payment payment) {
+        if (cfg.onChargebackCommands.isEmpty())
+            return;
+        // The commands run on the main thread, and only with a name that cannot carry other arguments into them
+        Bukkit.getScheduler().runTask(plugin, () -> {
+            for (String command : cfg.onChargebackCommands) {
+                if (command.contains("{player}") && !payment.hasValidName()) {
+                    plugin.getLogger().warning("Payment " + payment.id + " has no usable player name, so a chargeback command was skipped.");
+                    continue;
+                }
+                Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command.replace("{id}", payment.id)
+                    .replace("{player}", String.valueOf(payment.name)).replace("{amount}", String.valueOf(payment.amount))
+                    .replace("{package}", payment.shownPackages()));
+            }
+        });
     }
 
     void restore(String id) {
+        Payment payment = db.get(id);
+        if (payment == null)
+            return;
+        boolean wasOut = !payment.countsTowardTotals();
         db.updateStatus(id, "completed", null);
+        if (wasOut && payment.date >= installedAt)
+            goals.addProgress(payment.amount);
         refreshAllCaches();
     }
 

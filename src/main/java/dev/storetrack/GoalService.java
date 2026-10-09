@@ -1,17 +1,16 @@
 package dev.storetrack;
 
 import org.bukkit.Bukkit;
-import org.bukkit.ChatColor;
 
 import java.util.HashSet;
 import java.util.Set;
-import java.util.logging.Logger;
 
 /**
  * One internal-mode community goal. Progress and milestone checks are single comparisons
  * against these cached fields (updated after a payment batch applies), never a re-read from
  * disk per payment. Claimed milestones are tracked in the DB so a burst of payments or a manual
- * jump past several thresholds only fires each one once.
+ * jump past several thresholds only fires each one once. Changes are synchronized: a poll and an
+ * admin command can both move the goal, and a milestone must not fire twice.
  */
 final class GoalService {
 
@@ -50,7 +49,7 @@ final class GoalService {
     }
 
     double percent() {
-        return target <= 0 ? 0 : Math.min(100, current / target * 100);
+        return target <= 0 ? 0 : Math.max(0, Math.min(100, current / target * 100));
     }
 
     String bar() {
@@ -59,21 +58,34 @@ final class GoalService {
     }
 
     /** Internal-mode progress from newly-processed payments. Called off the main thread. */
-    void addProgress(double amount) {
+    synchronized void addProgress(double amount) {
         if (!"internal".equalsIgnoreCase(cfg.goalModeExternal) || target <= 0)
             return;
-        current += amount;
+        current = Math.max(0, current + amount);
         db.saveGoal(GOAL_ID, name, current, target, "active");
         checkMilestones();
     }
 
-    void set(double newCurrent, double newTarget, String newName, Logger log) {
+    /** Takes a refunded or removed payment back out of the goal. Milestones that were reached stay reached. */
+    void subtractProgress(double amount) {
+        addProgress(-amount);
+    }
+
+    /** Sets the numbers by hand (/storetrack goal set), keeping the milestones that were already reached. */
+    synchronized void set(double newCurrent, double newTarget, String newName) {
         current = newCurrent;
         target = newTarget;
         if (newName != null)
             name = newName;
         db.saveGoal(GOAL_ID, name, current, target, "active");
         checkMilestones();
+    }
+
+    /** A new goal (or none): every milestone can be reached again. */
+    synchronized void restart(double newTarget, String newName) {
+        db.clearMilestones(GOAL_ID);
+        claimed.clear();
+        set(0, newTarget, newName);
     }
 
     private void checkMilestones() {
@@ -88,14 +100,17 @@ final class GoalService {
     }
 
     private void fireBroadcast(int percent, String message, java.util.List<String> commands, boolean isCompletion) {
+        String goalName = name;
+        String bar = bar();
+        java.util.List<String> toRun = isCompletion ? cfg.goalCompletionCommands : commands;
         Bukkit.getScheduler().runTask(plugin, () -> {
             if (message != null && !message.isBlank())
-                Bukkit.broadcastMessage(ChatColor.translateAlternateColorCodes('&', message));
-            for (String command : (isCompletion ? cfg.goalCompletionCommands : commands))
+                Text.broadcast(message);
+            for (String command : toRun)
                 Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command);
             webhooks.send(isCompletion ? "goal-reached" : "milestone", java.util.Map.of(
-                "goal_name", name, "goal_percent", String.valueOf(percent), "goal_bar", bar(),
-                "goal_reward", commandsSummary(isCompletion ? cfg.goalCompletionCommands : commands)));
+                "goal_name", goalName, "goal_percent", String.valueOf(percent), "goal_bar", bar,
+                "goal_reward", commandsSummary(toRun)));
         });
     }
 

@@ -14,13 +14,13 @@ import java.util.concurrent.CompletableFuture;
 /**
  * Fire-and-forget Discord sends. Never lets a slow/unreachable webhook host delay payment
  * processing - every call runs on its own async future, one retry on failure, then it's logged
- * and dropped.
+ * and dropped. A webhook address holds a secret token, so it is never written to the log.
  */
 final class Webhooks {
 
     private final StoreTrackPlugin plugin;
     private final Config cfg;
-    private final HttpClient http = HttpClient.newHttpClient();
+    private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build();
 
     Webhooks(StoreTrackPlugin plugin, Config cfg) {
         this.plugin = plugin;
@@ -33,10 +33,10 @@ final class Webhooks {
             return;
         Map<String, String> full = new java.util.HashMap<>(placeholders);
         full.putIfAbsent("store_url", cfg.storeUrl);
-        CompletableFuture.runAsync(() -> attempt(def, full, 0));
+        CompletableFuture.runAsync(() -> attempt(eventKey, def, full, 0));
     }
 
-    private void attempt(Config.WebhookDef def, Map<String, String> placeholders, int retry) {
+    private void attempt(String eventKey, Config.WebhookDef def, Map<String, String> placeholders, int retry) {
         try {
             String body = render(def, placeholders);
             HttpRequest req = HttpRequest.newBuilder(URI.create(def.url()))
@@ -46,25 +46,24 @@ final class Webhooks {
                 .build();
             HttpResponse<String> res = http.send(req, HttpResponse.BodyHandlers.ofString());
             if (res.statusCode() >= 300)
-                retryOrLog(def, placeholders, retry, "status " + res.statusCode());
+                retryOrLog(eventKey, def, placeholders, retry, "status " + res.statusCode());
         } catch (Exception e) {
-            retryOrLog(def, placeholders, retry, e.getMessage());
+            retryOrLog(eventKey, def, placeholders, retry, e.getClass().getSimpleName());
         }
     }
 
-    private void retryOrLog(Config.WebhookDef def, Map<String, String> placeholders, int retry, String reason) {
+    private void retryOrLog(String eventKey, Config.WebhookDef def, Map<String, String> placeholders, int retry, String reason) {
         if (retry == 0)
-            attempt(def, placeholders, 1);
+            attempt(eventKey, def, placeholders, 1);
         else
-            plugin.getLogger().warning("Webhook to " + def.url() + " failed: " + reason);
+            plugin.getLogger().warning("The '" + eventKey + "' webhook failed: " + reason);
     }
 
     private String render(Config.WebhookDef def, Map<String, String> placeholders) throws IOException {
         String raw = def.mode() == Config.WebhookMode.EMBED
             ? legacyEmbed(placeholders)
             : Files.readString(new File(plugin.getDataFolder(), def.template()).toPath());
-        int accent = Integer.parseInt(def.accentColor().replaceFirst("^#", ""), 16);
-        raw = raw.replace("{accent_color}", String.valueOf(accent));
+        raw = raw.replace("{accent_color}", String.valueOf(def.accentColor()));
         for (Map.Entry<String, String> e : placeholders.entrySet())
             raw = raw.replace("{" + e.getKey() + "}", escape(e.getValue()));
         return raw.replaceAll("\\{[a-z_]+}", ""); // any placeholder this event didn't supply
@@ -75,10 +74,33 @@ final class Webhooks {
         String title = placeholders.getOrDefault("goal_name", placeholders.getOrDefault("sale_name", "StoreTrack"));
         String description = placeholders.getOrDefault("player", "") + " " + placeholders.getOrDefault("package", "");
         return "{\"embeds\":[{\"title\":\"" + escape(title) + "\",\"description\":\"" + escape(description.trim())
-            + "\",\"color\":{accent_color}}]}";
+            + "\",\"color\":{accent_color},\"allowed_mentions\":{\"parse\":[]}}]}";
     }
 
-    private static String escape(String value) {
-        return value == null ? "" : value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n");
+    /**
+     * Makes a value safe inside a JSON string: quotes, backslashes and control characters are escaped, and an @ gets a
+     * zero-width space after it so a package or name called @everyone does not ping the channel.
+     */
+    static String escape(String value) {
+        if (value == null)
+            return "";
+        StringBuilder out = new StringBuilder(value.length() + 8);
+        for (char c : value.toCharArray()) {
+            switch (c) {
+                case '\\' -> out.append("\\\\");
+                case '"' -> out.append("\\\"");
+                case '\n' -> out.append("\\n");
+                case '\r' -> out.append("\\r");
+                case '\t' -> out.append("\\t");
+                case '@' -> out.append("@\\u200b");
+                default -> {
+                    if (c < 32)
+                        out.append(String.format("\\u%04x", (int) c));
+                    else
+                        out.append(c);
+                }
+            }
+        }
+        return out.toString();
     }
 }

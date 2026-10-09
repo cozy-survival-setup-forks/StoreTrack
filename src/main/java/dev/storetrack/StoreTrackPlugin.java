@@ -1,19 +1,36 @@
 package dev.storetrack;
 
+import org.bukkit.Bukkit;
+import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.entity.Player;
+import org.bukkit.event.EventHandler;
 import org.bukkit.event.HandlerList;
+import org.bukkit.event.Listener;
+import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
 
 public final class StoreTrackPlugin extends JavaPlugin {
+
+    private static final String[] WEBHOOK_EVENTS = {"purchase", "goal-reached", "milestone", "sale-activated"};
 
     private Config config;
     private FileConfiguration messages;
     private Database db;
     private PaymentService paymentService;
+    private Rankings rankings;
+    private GoalService goals;
+    private PaymentProvider provider;
     private GgWave ggwave;
     private StoreTrackExpansion expansion;
     private BukkitTask pollTask;
@@ -21,10 +38,28 @@ public final class StoreTrackPlugin extends JavaPlugin {
     @Override
     public void onEnable() {
         saveDefaultConfig();
-        saveResource("messages.yml", false);
-        for (String event : new String[]{"purchase", "goal-reached", "milestone", "sale-activated"})
-            saveResource("webhooks/" + event + ".json", false);
-        start();
+        saveIfMissing("messages.yml");
+        for (String event : WEBHOOK_EVENTS)
+            saveIfMissing("webhooks/" + event + ".json");
+
+        FileConfiguration loadedConfig;
+        FileConfiguration loadedMessages;
+        try {
+            loadedConfig = strict("config.yml");
+            loadedMessages = strict("messages.yml");
+        } catch (IOException | InvalidConfigurationException e) {
+            getLogger().severe("StoreTrack cannot start: " + e.getMessage());
+            getLogger().severe("Fix the file (the line is named above) or delete it to get a fresh one, then start the server again.");
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
+        if (!start(loadedConfig, loadedMessages)) {
+            getServer().getPluginManager().disablePlugin(this);
+            return;
+        }
+        Metrics.start(this);
+        Banner.print(this, "Thank you for supporting the server.");
+        summary();
     }
 
     @Override
@@ -32,27 +67,87 @@ public final class StoreTrackPlugin extends JavaPlugin {
         stop();
     }
 
-    void reloadStoreTrackConfig() {
-        stop();
-        reloadConfig();
-        start();
+    /** Reads a file of the data folder on top of the one in the jar. A file with a mistake is an error here, not silently empty. */
+    private FileConfiguration strict(String name) throws IOException, InvalidConfigurationException {
+        YamlConfiguration yaml = new YamlConfiguration();
+        yaml.load(new File(getDataFolder(), name));
+        try (var in = getResource(name)) {
+            if (in != null)
+                yaml.setDefaults(YamlConfiguration.loadConfiguration(new InputStreamReader(in, StandardCharsets.UTF_8)));
+        }
+        return yaml;
     }
 
-    private void start() {
-        config = Config.load(getConfig());
-        messages = YamlConfiguration.loadConfiguration(new File(getDataFolder(), "messages.yml"));
+    private void saveIfMissing(String path) {
+        if (!new File(getDataFolder(), path).exists())
+            saveResource(path, false);
+    }
 
-        db = new Database(this, config);
-        PaymentProvider provider = switch (config.provider) {
-            case TEBEX -> new TebexProvider(config, db, getLogger());
-            case CRAFTINGSTORE -> new CraftingStoreProvider(config, db, getLogger());
-            case PAYNOW -> new PaynowProvider(config, db, getLogger());
+    /** Returns false (and leaves everything as it was) when a file has a mistake or the database cannot be opened. */
+    boolean reloadStoreTrackConfig() {
+        FileConfiguration loadedConfig;
+        FileConfiguration loadedMessages;
+        try {
+            loadedConfig = strict("config.yml");
+            loadedMessages = strict("messages.yml");
+        } catch (IOException | InvalidConfigurationException e) {
+            getLogger().severe("The reload was cancelled and the old settings stay: " + e.getMessage());
+            return false;
+        }
+        stop();
+        reloadConfig();
+        if (!start(loadedConfig, loadedMessages)) {
+            getLogger().severe("StoreTrack is switching itself off. Fix the problem above and restart the server.");
+            getServer().getPluginManager().disablePlugin(this);
+            return false;
+        }
+        summary();
+        return true;
+    }
+
+    private boolean start(FileConfiguration loadedConfig, FileConfiguration loadedMessages) {
+        config = Config.load(loadedConfig, getLogger());
+        messages = loadedMessages;
+
+        try {
+            db = new Database(getDataFolder(), config);
+        } catch (RuntimeException e) {
+            Throwable cause = e;
+            while (cause.getCause() != null)
+                cause = cause.getCause();
+            getLogger().severe("The database could not be opened (storage.type is " + config.storageType.name().toLowerCase() + "): " + cause.getMessage());
+            if (config.storageType != Config.StorageType.SQLITE)
+                getLogger().severe("Check storage.host, storage.port, storage.database, storage.username and storage.password.");
+            db = null;
+            return false;
+        }
+
+        // The first time StoreTrack runs on an empty database, everything the store already holds is history:
+        // it is counted but not announced. An existing install keeps working as it did.
+        long installedAt;
+        try {
+            String installed = db.meta("installed-at", "");
+            if (installed.isEmpty()) {
+                installed = String.valueOf(db.hasPayments() ? 0L : System.currentTimeMillis());
+                db.setMeta("installed-at", installed);
+            }
+            installedAt = Long.parseLong(installed);
+        } catch (RuntimeException e) {
+            getLogger().severe("The database could not be read: " + e.getMessage());
+            return false;
+        }
+
+        provider = switch (config.provider) {
+            case TEBEX -> usable("tebex.secret", config.tebexSecret) ? new TebexProvider(config, db, getLogger()) : new ManualProvider();
+            case CRAFTINGSTORE -> usable("craftingstore.secret", config.craftingstoreSecret) ? new CraftingStoreProvider(config, db, getLogger()) : new ManualProvider();
+            case PAYNOW -> usable("paynow.api-key", config.paynowApiKey) && usable("paynow.store-id", config.paynowStoreId)
+                ? new PaynowProvider(config, db, getLogger()) : new ManualProvider();
             case MANUAL -> new ManualProvider();
         };
 
         Webhooks webhooks = new Webhooks(this, config);
-        Rankings rankings = new Rankings(db);
-        GoalService goals = new GoalService(this, db, config, webhooks);
+        rankings = new Rankings(db);
+        goals = new GoalService(this, db, config, webhooks);
         DonorTiers donorTiers = new DonorTiers(this, db, config);
 
         NpcSkins npcSkins = null;
@@ -63,9 +158,15 @@ public final class StoreTrackPlugin extends JavaPlugin {
 
         ggwave = new GgWave(this, config);
         getServer().getPluginManager().registerEvents(ggwave, this);
+        getServer().getPluginManager().registerEvents(new Joins(), this);
 
-        paymentService = new PaymentService(this, config, db, provider, rankings, goals, donorTiers, webhooks, npcSkins);
-        paymentService.primeCaches();
+        paymentService = new PaymentService(this, config, db, provider, rankings, goals, donorTiers, webhooks, npcSkins, installedAt);
+        try {
+            paymentService.primeCaches();
+        } catch (RuntimeException e) {
+            getLogger().severe("The database could not be read: " + e.getMessage());
+            return false;
+        }
 
         StoreTrackCommand command = new StoreTrackCommand(this, paymentService, goals, ggwave, webhooks, npcSkins);
         getCommand("storetrack").setExecutor(command);
@@ -77,18 +178,52 @@ public final class StoreTrackPlugin extends JavaPlugin {
         }
 
         pollTask = getServer().getScheduler().runTaskTimerAsynchronously(this, paymentService::pollOnce, 20L, config.pollIntervalSeconds * 20L);
+        return true;
+    }
+
+    private boolean usable(String path, String value) {
+        if (value != null && !value.isBlank() && !value.equalsIgnoreCase("paste-here"))
+            return true;
+        getLogger().warning("provider is " + config.provider.name().toLowerCase() + " but " + path
+            + " is not filled in, so no payments will be fetched. Paste it into config.yml and use /storetrack reload.");
+        return false;
+    }
+
+    private void summary() {
+        List<String> hooks = new ArrayList<>();
+        config.webhooks.forEach((name, def) -> {
+            if (def.enabled() && !def.url().isBlank())
+                hooks.add(name);
+        });
+        String how;
+        if (!(provider instanceof ManualProvider))
+            how = ", checked every " + config.pollIntervalSeconds + "s";
+        else if (config.provider == Config.Provider.MANUAL)
+            how = " (payments come from /storetrack manual)";
+        else
+            how = " (not connected, see above)";
+        getLogger().info("Ready: provider " + config.provider.name().toLowerCase() + how
+            + ", storage " + config.storageType.name().toLowerCase()
+            + ", goal " + (long) goals.current() + "/" + (long) goals.target()
+            + ", " + config.milestones.size() + " milestone(s), " + config.donorTiers.size() + " donor tier(s)"
+            + ", webhooks " + (hooks.isEmpty() ? "off" : String.join(", ", hooks)));
+        getLogger().info("PlaceholderAPI " + (expansion != null ? "found, placeholders are on" : "not found, no placeholders")
+            + "; FancyNpcs " + (getServer().getPluginManager().isPluginEnabled("FancyNpcs") ? "found, NPC skins are on" : "not found"));
     }
 
     private void stop() {
         if (pollTask != null)
             pollTask.cancel();
+        pollTask = null;
         if (ggwave != null)
             ggwave.stop();
         HandlerList.unregisterAll((org.bukkit.plugin.Plugin) this);
         if (expansion != null)
             expansion.unregister();
+        expansion = null;
         if (db != null)
             db.close();
+        db = null;
     }
 
     Config config() {
@@ -97,5 +232,25 @@ public final class StoreTrackPlugin extends JavaPlugin {
 
     FileConfiguration messages() {
         return messages;
+    }
+
+    /** Keeps the placeholder totals of the players who are online up to date, so they are right from the moment someone joins. */
+    private final class Joins implements Listener {
+        @EventHandler
+        public void onJoin(PlayerJoinEvent event) {
+            Player player = event.getPlayer();
+            Bukkit.getScheduler().runTaskAsynchronously(StoreTrackPlugin.this, () -> {
+                try {
+                    rankings.refreshOnlineTotals(List.of(player));
+                } catch (RuntimeException ignored) {
+                    // the database is busy or closed during a reload; the next payment refreshes it
+                }
+            });
+        }
+
+        @EventHandler
+        public void onQuit(PlayerQuitEvent event) {
+            rankings.forget(event.getPlayer().getUniqueId());
+        }
     }
 }

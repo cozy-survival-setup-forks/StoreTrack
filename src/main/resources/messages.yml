@@ -1,6 +1,7 @@
 prefix: "&8[&6StoreTrack&8] "
 no-permission: "&cYou don't have permission to do that."
 reloaded: "&aConfig reloaded."
+reload-failed: "&cReload cancelled - see the console. The old settings stay."
 player-not-found: "&cPlayer not found."
 manual-created: "&aCreated a manual payment for &f%player%&a."
 payment-not-found: "&cPayment &f%id% &cnot found."

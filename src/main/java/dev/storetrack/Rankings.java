@@ -97,6 +97,10 @@ final class Rankings {
         onlineTotals.keySet().removeIf(id -> org.bukkit.Bukkit.getPlayer(id) == null);
     }
 
+    void forget(UUID uuid) {
+        onlineTotals.remove(uuid);
+    }
+
     double[] onlineTotal(UUID uuid) {
         return onlineTotals.get(uuid);
     }
