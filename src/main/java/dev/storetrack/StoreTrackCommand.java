@@ -16,7 +16,7 @@ import java.util.stream.Collectors;
 
 final class StoreTrackCommand implements CommandExecutor, TabCompleter {
 
-    private static final List<String> SUBS = List.of("reload", "manual", "payment", "history", "recent", "goal", "test", "ggwave", "npcrefresh", "status");
+    private static final List<String> SUBS = List.of("reload", "manual", "payment", "history", "recent", "goal", "test", "ggwave", "npcrefresh", "status", "doctor", "backup");
 
     private final StoreTrackPlugin plugin;
     private final PaymentService payments;
@@ -54,6 +54,18 @@ final class StoreTrackCommand implements CommandExecutor, TabCompleter {
                 sender.sendMessage(msg(plugin.reloadStoreTrackConfig() ? "reloaded" : "reload-failed"));
             }
             case "status" -> status(sender);
+            case "doctor" -> {
+                if (args.length >= 3 && args[1].equalsIgnoreCase("resolve"))
+                    sender.sendMessage(plugin.resolveReward(args[2]) ? "Marked as handled." : "There is no unchecked reward with that id.");
+                else
+                    plugin.doctor().forEach(sender::sendMessage);
+            }
+            case "backup" -> {
+                if (args.length < 2 || !args[1].equalsIgnoreCase("now"))
+                    sender.sendMessage("Use /storetrack backup now");
+                else
+                    sender.sendMessage(plugin.backupNow() ? "Backup made and checked." : "The backup FAILED, see the console.");
+            }
             case "manual" -> manual(sender, args);
             case "payment" -> payment(sender, args);
             case "history" -> history(sender, args);
@@ -295,6 +307,8 @@ final class StoreTrackCommand implements CommandExecutor, TabCompleter {
                 case "goal" -> List.of("create", "set", "delete");
                 case "test" -> List.of("purchase", "goal", "milestone", "sale");
                 case "ggwave" -> List.of("start", "stop");
+                case "doctor" -> List.of("resolve");
+                case "backup" -> List.of("now");
                 case "manual", "history" -> Bukkit.getOnlinePlayers().stream().map(Player::getName).collect(Collectors.toList());
                 default -> List.<String>of();
             };

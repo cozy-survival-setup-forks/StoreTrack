@@ -94,12 +94,14 @@ final class GoalService {
             if (pct < m.percent() || claimed.contains(m.percent()))
                 continue;
             claimed.add(m.percent());
-            db.claimMilestone(GOAL_ID, m.percent());
-            fireBroadcast(m.percent(), m.message(), m.commands(), m.percent() == 100);
+            java.util.List<String> toRun = m.percent() == 100 ? cfg.goalCompletionCommands : m.commands();
+            // the record that the commands are about to run is written with the claim, so a stop in between is listed
+            String record = db.claimMilestone(GOAL_ID, m.percent(), toRun.isEmpty() ? null : "goal=" + GOAL_ID + " percent=" + m.percent());
+            fireBroadcast(m.percent(), m.message(), m.commands(), m.percent() == 100, record);
         }
     }
 
-    private void fireBroadcast(int percent, String message, java.util.List<String> commands, boolean isCompletion) {
+    private void fireBroadcast(int percent, String message, java.util.List<String> commands, boolean isCompletion, String record) {
         String goalName = name;
         String bar = bar();
         java.util.List<String> toRun = isCompletion ? cfg.goalCompletionCommands : commands;
@@ -108,6 +110,7 @@ final class GoalService {
                 Text.broadcast(message);
             for (String command : toRun)
                 Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command);
+            plugin.rewardsDone(db, java.util.Collections.singletonList(record));
             webhooks.send(isCompletion ? "goal-reached" : "milestone", java.util.Map.of(
                 "goal_name", goalName, "goal_percent", String.valueOf(percent), "goal_bar", bar,
                 "goal_reward", commandsSummary(toRun)));

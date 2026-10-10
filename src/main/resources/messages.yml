@@ -1,3 +1,4 @@
+lang-version: 1
 prefix: "&8[&6StoreTrack&8] "
 no-permission: "&cYou don't have permission to do that."
 reloaded: "&aConfig reloaded."
@@ -24,4 +25,4 @@ ggwave-started: "&aGG wave started."
 ggwave-stopped: "&aGG wave stopped."
 npcrefresh-done: "&aNPC skins refreshed."
 test-sent: "&aSent test %type%."
-usage: "&7/storetrack reload|status|manual|payment|history|recent|goal|test|ggwave|npcrefresh"
+usage: "&7/storetrack reload|status|manual|payment|history|recent|goal|test|ggwave|npcrefresh|doctor|backup"

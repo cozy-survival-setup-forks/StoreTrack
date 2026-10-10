@@ -96,7 +96,9 @@ final class PaymentService {
             p.silent = p.date < installedAt;
         }
 
-        db.insertBatch(fresh); // one transaction for the whole batch, not one write per payment
+        // one transaction for the whole batch, not one write per payment. A payment whose purchase commands are
+        // about to run gets a record in the same transaction, so a stop before they ran is listed, never lost quietly.
+        Map<String, String> records = db.insertBatch(fresh, this::runsCommands);
         double totalNew = fresh.stream().filter(p -> p.countsTowardTotals() && !p.silent).mapToDouble(p -> p.amount).sum();
         if (totalNew > 0)
             goals.addProgress(totalNew); // recomputes milestones once for the batch, not per payment
@@ -106,18 +108,31 @@ final class PaymentService {
                 donorTiers.check(p.uuid, p.name);
 
         Bukkit.getScheduler().runTask(plugin, () -> {
+            List<String> done = new ArrayList<>();
             for (Payment p : fresh) {
                 if (!p.countsTowardTotals() || p.silent)
                     continue;
+                String record = records.get(p.id);
                 try {
                     announce(p);
+                    if (record != null)
+                        done.add(record);
                 } catch (RuntimeException e) {
                     plugin.getLogger().warning("Announcing payment " + p.id + " failed: " + e);
+                    if (record != null)
+                        db.flag(record, "announcing failed: " + e);
                 }
             }
+            plugin.rewardsDone(db, done);
             if (npcSkins != null)
                 npcSkins.refreshAll();
         });
+    }
+
+    /** Whether the purchase commands will run for this payment, which is when it needs a record. */
+    private boolean runsCommands(Payment p) {
+        return p.countsTowardTotals() && !p.silent && p.amount >= cfg.minAmountForBroadcast
+            && !cfg.onPurchaseCommands.isEmpty() && p.hasValidName();
     }
 
     private void announce(Payment payment) {
@@ -207,15 +222,16 @@ final class PaymentService {
             db.updateStatus(id, status, reason); // already out of the totals, only the label changes
             return;
         }
-        db.updateStatus(id, status, reason);
+        String record = db.updateStatus(id, status, reason,
+            runCommands && !cfg.onChargebackCommands.isEmpty() ? "payment=" + id + " player=" + payment.name + " amount=" + payment.amount : null);
         if (payment.date >= installedAt)
             goals.subtractProgress(payment.amount);
         refreshAllCaches();
         if (runCommands)
-            runChargebackCommands(payment);
+            runChargebackCommands(payment, record);
     }
 
-    private void runChargebackCommands(Payment payment) {
+    private void runChargebackCommands(Payment payment, String record) {
         if (cfg.onChargebackCommands.isEmpty())
             return;
         // The commands run on the main thread, and only with a name that cannot carry other arguments into them
@@ -229,6 +245,7 @@ final class PaymentService {
                     .replace("{player}", String.valueOf(payment.name)).replace("{amount}", String.valueOf(payment.amount))
                     .replace("{package}", payment.shownPackages()));
             }
+            plugin.rewardsDone(db, java.util.Collections.singletonList(record));
         });
     }
 

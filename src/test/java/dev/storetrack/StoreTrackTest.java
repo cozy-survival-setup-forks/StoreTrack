@@ -94,8 +94,8 @@ class StoreTrackTest {
     }
 
     @Test
-    void databaseStoresOnceRanksByBuyerAndKeepsMilestoneClaims(@TempDir Path dir) {
-        Database db = new Database(dir.toFile(), defaults());
+    void databaseStoresOnceRanksByBuyerAndKeepsMilestoneClaims(@TempDir Path dir) throws Exception {
+        Database db = new Database(dir.toFile(), defaults(), Logger.getAnonymousLogger(), 3);
         try {
             assertFalse(db.hasPayments());
             UUID steve = UUID.randomUUID();

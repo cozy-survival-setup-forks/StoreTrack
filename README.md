@@ -63,9 +63,19 @@ The name of a buyer comes from the store, so it is checked before it goes into a
 
 `config.yml`, `messages.yml`, and the Discord templates in `webhooks/`. Data is in `storetrack.db` (SQLite) or your database.
 
+## Keeping your files safe
+
+- `config.yml` and `messages.yml` start with a `config-version` / `lang-version` number. After an update, new settings are added to your files with their comments, and nothing you changed is touched. The old file is kept next to it as `<name>.<date>.bak` (the newest 5). A setting is only removed when the changelog says so.
+- A value with a mistake (a negative time, an item that does not exist, text where a number belongs) is named in the console by file and key. On a reload, the settings in use stay as they were.
+- Files are written to a temporary file and moved into place, with the previous version kept as `.bak`. A file that cannot be read is restored from its `.bak`, and the unreadable one is kept as `.broken-<time>`.
+- A file or database that was made by a newer version of the plugin is left alone and a warning is logged.
+- `storetrack.db` is a SQLite database in WAL mode. It is checked when the plugin starts, a copy is made on a schedule (`backup.interval-hours`, `backup.keep` in `config.yml`, in the `backups` folder) and every copy is opened and checked before older ones are removed. A damaged database is replaced by the newest copy that checks out, or, where nothing may be lost, the plugin stays off and the file is left untouched.
+- The backup is a consistent snapshot, not a copy of the open file.
+- `/storetrack doctor` shows the health of the files, versions, last backup and recent save failures (no player data). `/storetrack backup now` makes a checked backup right away. Both need the admin permission.
+
 ## Telemetry
 
-On startup StoreTrack sends a small anonymous beacon (plugin name/version, server software/version, online/max player counts, and a random ID with no player data) so we know which versions are in use. Turn it off with `metrics.enabled: false` in `config.yml`.
+On startup StoreTrack sends a small anonymous beacon (plugin name/version, server software/version, online/max player counts, and a random ID with no player data) so we know which versions are in use. Turn it off with `metrics.enabled: false` in `config.yml`. The random ID is kept as `server-id` in `storetrack.db` (older versions kept it in a `.server-id` file, which is moved over unchanged). The address and the interval are fixed in the plugin and are not settings.
 
 ## Building
 

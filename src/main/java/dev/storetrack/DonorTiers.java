@@ -34,11 +34,17 @@ final class DonorTiers {
                 plugin.getLogger().warning("Donor tier " + tier.threshold() + " for " + uuid + " waits: the name of the player is not known.");
                 continue;
             }
-            db.claimDonor(uuid, tier.threshold());
-            for (String command : tier.commands()) {
-                String filled = command.replace("{player}", who);
-                Bukkit.getScheduler().runTask(plugin, () -> Bukkit.dispatchCommand(Bukkit.getConsoleSender(), filled));
-            }
+            // the record that the commands are about to run is written with the claim, so a stop in between is listed
+            String record = db.claimDonor(uuid, tier.threshold(),
+                tier.commands().isEmpty() ? null : "tier=" + tier.threshold() + " player=" + who + " uuid=" + uuid);
+            java.util.List<String> filled = new java.util.ArrayList<>();
+            for (String command : tier.commands())
+                filled.add(command.replace("{player}", who));
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                for (String command : filled)
+                    Bukkit.dispatchCommand(Bukkit.getConsoleSender(), command);
+                plugin.rewardsDone(db, java.util.Collections.singletonList(record));
+            });
         }
     }
 }

@@ -1,5 +1,12 @@
 package dev.storetrack;
 
+import dev.storetrack.safe.ConfigMigrator;
+import dev.storetrack.safe.Doctor;
+import dev.storetrack.safe.FileBackups;
+import dev.storetrack.safe.Guard;
+import dev.storetrack.safe.Health;
+import dev.storetrack.safe.Prep;
+import dev.storetrack.safe.ServerId;
 import org.bukkit.Bukkit;
 import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.FileConfiguration;
@@ -10,6 +17,7 @@ import org.bukkit.event.HandlerList;
 import org.bukkit.event.Listener;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.plugin.IllegalPluginAccessException;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.scheduler.BukkitTask;
 
@@ -18,12 +26,33 @@ import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
+import java.util.Objects;
 
 public final class StoreTrackPlugin extends JavaPlugin {
 
     private static final String[] WEBHOOK_EVENTS = {"purchase", "goal-reached", "milestone", "sale-activated"};
 
+    private static final int CONFIG_VERSION = 1;
+    private static final int LANG_VERSION = 1;
+
+    private final List<Prep.Spec> files = List.of(
+        new Prep.Spec("config.yml", "config-version", CONFIG_VERSION, Prep.configMigrator(CONFIG_VERSION), rules -> {
+            rules.range("poll-interval-seconds", 5, 86_400);
+            rules.range("min-amount-for-broadcast", 0, 1_000_000_000);
+            rules.range("storage.port", 1, 65_535);
+            rules.range("storage.pool-size", 2, 100);
+            rules.range("recent.size", 1, 100);
+            rules.range("goal.bar.length", 1, 200);
+            rules.range("ggwave.duration-seconds", 1, 3600);
+            rules.range("backup.interval-hours", 1, 168);
+            rules.range("backup.keep", 1, 90);
+        }),
+        new Prep.Spec("messages.yml", "lang-version", LANG_VERSION, new ConfigMigrator("lang-version", LANG_VERSION), null));
+
+    private BukkitTask backupTask;
+    private boolean started;
     private Config config;
     private FileConfiguration messages;
     private Database db;
@@ -41,6 +70,8 @@ public final class StoreTrackPlugin extends JavaPlugin {
         saveIfMissing("messages.yml");
         for (String event : WEBHOOK_EVENTS)
             saveIfMissing("webhooks/" + event + ".json");
+        Health.storage("SQLite storetrack.db (or the MySQL/MariaDB database in config.yml) for payments, goals and claimed rewards; YAML for config.yml and messages.yml");
+        Prep.startup(this, files);
 
         FileConfiguration loadedConfig;
         FileConfiguration loadedMessages;
@@ -57,7 +88,9 @@ public final class StoreTrackPlugin extends JavaPlugin {
             getServer().getPluginManager().disablePlugin(this);
             return;
         }
-        Metrics.start(this);
+        boolean beacon = getConfig().getBoolean("metrics.enabled", true);
+        Metrics.start(this, ServerId.resolve(getDataFolder().toPath(), db.serverIdSlot(), beacon, getLogger()));
+        started = true;
         Banner.print(this, "Thank you for supporting the server.");
         summary();
     }
@@ -85,6 +118,13 @@ public final class StoreTrackPlugin extends JavaPlugin {
 
     /** Returns false (and leaves everything as it was) when a file has a mistake or the database cannot be opened. */
     boolean reloadStoreTrackConfig() {
+        if (started) {
+            List<Guard.Problem> problems = Prep.validate(this, files);
+            if (!problems.isEmpty()) {
+                Prep.logRejected(this, problems);
+                return false;
+            }
+        }
         FileConfiguration loadedConfig;
         FileConfiguration loadedMessages;
         try {
@@ -110,17 +150,20 @@ public final class StoreTrackPlugin extends JavaPlugin {
         messages = loadedMessages;
 
         try {
-            db = new Database(getDataFolder(), config);
-        } catch (RuntimeException e) {
+            db = new Database(getDataFolder(), config, getLogger(), backupKeep(loadedConfig));
+        } catch (RuntimeException | IOException e) {
             Throwable cause = e;
             while (cause.getCause() != null)
                 cause = cause.getCause();
             getLogger().severe("The database could not be opened (storage.type is " + config.storageType.name().toLowerCase() + "): " + cause.getMessage());
             if (config.storageType != Config.StorageType.SQLITE)
                 getLogger().severe("Check storage.host, storage.port, storage.database, storage.username and storage.password.");
+            getLogger().severe("StoreTrack is switching itself off so no payment or reward is lost or run twice. Nothing was changed in the database.");
+            Health.failure("the database could not be opened: " + cause.getMessage());
             db = null;
             return false;
         }
+        db.recover();
 
         // The first time StoreTrack runs on an empty database, everything the store already holds is history:
         // it is counted but not announced. An existing install keeps working as it did.
@@ -178,6 +221,11 @@ public final class StoreTrackPlugin extends JavaPlugin {
         }
 
         pollTask = getServer().getScheduler().runTaskTimerAsynchronously(this, paymentService::pollOnce, 20L, config.pollIntervalSeconds * 20L);
+        if (db.isSqlite()) {
+            Database copying = db;
+            long hours = Math.max(1, Math.min(168, loadedConfig.getInt("backup.interval-hours", 6)));
+            backupTask = getServer().getScheduler().runTaskTimerAsynchronously(this, copying::backup, 20L * 60, hours * 3600L * 20L);
+        }
         return true;
     }
 
@@ -211,10 +259,64 @@ public final class StoreTrackPlugin extends JavaPlugin {
             + "; FancyNpcs " + (getServer().getPluginManager().isPluginEnabled("FancyNpcs") ? "found, NPC skins are on" : "not found"));
     }
 
+    private static int backupKeep(FileConfiguration c) {
+        return Math.max(1, Math.min(90, c.getInt("backup.keep", 7)));
+    }
+
+    /** Marks the reward commands of these records as run. The records are written off the main thread. */
+    void rewardsDone(Database from, Collection<String> records) {
+        List<String> list = records.stream().filter(Objects::nonNull).toList();
+        if (list.isEmpty() || from == null)
+            return;
+        Runnable work = () -> list.forEach(from::succeeded);
+        try {
+            getServer().getScheduler().runTaskAsynchronously(this, work);
+        } catch (IllegalPluginAccessException e) {
+            work.run(); // the plugin is shutting down
+        }
+    }
+
+    /** The text of /storetrack doctor. */
+    List<String> doctor() {
+        List<String> extra = new ArrayList<>(Prep.versionLines(this, files));
+        Database current = db;
+        if (current == null)
+            return Doctor.report(getName(), getPluginMeta().getVersion(), List.of("The database is not open."));
+        if (current.isSqlite()) {
+            extra.add("Database: storetrack.db, schema " + current.schemaVersion() + " (this plugin writes " + Database.SCHEMA + ")");
+            String newest = current.newestBackup();
+            extra.add("Newest database copy on disk: " + (newest == null ? "none yet" : newest));
+        } else {
+            extra.add("Database: " + config.storageType.name().toLowerCase() + " server (copies are made by the database server)");
+        }
+        List<String[]> unknown = current.unknownRecords();
+        extra.add("Reward commands that may or may not have run (not repeated): " + unknown.size());
+        for (String[] row : unknown)
+            extra.add("  " + row[0] + " " + row[1] + " at " + row[2] + "   (after checking: /storetrack doctor resolve <id>)");
+        return Doctor.report(getName(), getPluginMeta().getVersion(), extra);
+    }
+
+    boolean resolveReward(String id) {
+        return db != null && db.resolve(id);
+    }
+
+    /** /storetrack backup now: a checked copy of the database (SQLite) and of the settings and template files. */
+    boolean backupNow() {
+        boolean database = db == null || db.backup();
+        List<String> names = new ArrayList<>(Prep.fileNames(files));
+        for (String event : WEBHOOK_EVENTS)
+            names.add("webhooks/" + event + ".json");
+        boolean settingsFiles = FileBackups.snapshot(getDataFolder().toPath(), names, 5, getLogger());
+        return database && settingsFiles;
+    }
+
     private void stop() {
         if (pollTask != null)
             pollTask.cancel();
         pollTask = null;
+        if (backupTask != null)
+            backupTask.cancel();
+        backupTask = null;
         if (ggwave != null)
             ggwave.stop();
         HandlerList.unregisterAll((org.bukkit.plugin.Plugin) this);

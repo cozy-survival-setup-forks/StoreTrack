@@ -1,3 +1,4 @@
+config-version: 1
 provider: manual # tebex | craftingstore | paynow | manual
 store-url: "https://store.yourserver.com"
 ignore-before: "2000-01-01" # yyyy-MM-dd - payments older than this are never processed
@@ -120,6 +121,16 @@ webhooks:
     template: "webhooks/sale-activated.json"
     accent-color: "#ff4757"
 
+# Copies of the database (storetrack.db, when storage.type is sqlite), made while the server runs and checked before
+# older ones are removed. They are in the "backups" folder. /storetrack backup now makes one at once.
+# A MySQL or MariaDB database is backed up by its own server.
+backup:
+  # Hours between copies.
+  interval-hours: 6
+  # How many copies to keep.
+  keep: 7
+
+# Anonymous usage beacon: plugin name/version, server software/version and online/max player
+# counts, nothing else. Set to false to turn it off.
 metrics:
   enabled: true
-  interval-minutes: 45
